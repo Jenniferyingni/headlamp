@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import { useMemo } from 'react';
 import { Icon } from '@iconify/react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
@@ -26,6 +25,8 @@ import StepLabel from '@mui/material/StepLabel';
 import Stepper from '@mui/material/Stepper';
 import { styled, useTheme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
+import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import Event from '../../lib/k8s/event';
 import Node from '../../lib/k8s/node';
 
@@ -67,19 +68,65 @@ interface NodeUpgradeState {
 
 /**
  * Check if any node in the list is an AKS-managed node.
- * AKS nodes have a providerID starting with "azure://" or carry the
- * "kubernetes.azure.com/cluster" label, or have a name matching AKS naming patterns.
+ * Detection uses multiple signals:
+ * - providerID starting with "azure://"
+ * - "kubernetes.azure.com/cluster" label
+ * - Node name matching AKS naming patterns (aks-<pool>-... or akswin...)
  */
 export function hasAKSManagedNodes(nodes: Node[]): boolean {
   return nodes.some(node => {
-    // AKS node naming patterns: aks-<pool>-<id>-vmss<index> or akswin<chars>
+    // Check providerID for Azure provider
+    const providerID = node.jsonData?.spec?.providerID || '';
+    if (providerID.startsWith('azure://')) {
+      return true;
+    }
+
+    // Check for AKS-specific label
+    const labels = node.metadata.labels || {};
+    if ('kubernetes.azure.com/cluster' in labels) {
+      return true;
+    }
+
+    // AKS node naming patterns
     const name = node.metadata.name || '';
     if (/^aks-/.test(name) || /^akswin/.test(name)) {
       return true;
     }
+
     return false;
   });
 }
+
+/**
+ * event-matching constants for AKS node upgrade detection.
+ * These message substrings come from the AKS and are used to identify upgrade stages from Kubernetes events.
+ * AKS have test to guarantee these messages remain consistent
+ *
+ */
+const EVENT_REASONS = {
+  UPGRADE: 'Upgrade',
+  SURGE: 'Surge',
+  CORDON: 'Cordon',
+  DRAIN: 'Drain',
+  STARTING: 'Starting',
+  REGISTERED_NODE: 'RegisteredNode',
+} as const;
+
+const EVENT_MESSAGES = {
+  UPGRADE_STARTED: 'Upgrade started for agent pool',
+  SURGE_CREATED: 'Created a surge node',
+  CORDONING: 'Cordoning node',
+  DRAINING: 'Draining node',
+  DELETING_NODE: 'Deleting node',
+  DELETING_FROM_API: 'from API server',
+  REIMAGING: 'Reimaging node',
+  SUCCESSFULLY_REIMAGED: 'Successfully reimaged node',
+  SUCCESSFULLY_UPGRADED: 'Successfully upgraded node',
+  STARTING_KUBELET: 'Starting kubelet',
+  REGISTERED_NODE: 'Registered Node',
+  UNABLE_TO_DELETE: 'Unable to delete node',
+  FAILED_TO_REIMAGE: 'Failed to reimage node',
+} as const;
 
 /**
  * Determine if an upgrade is happening by checking for surge or reimage events.
@@ -88,13 +135,16 @@ export function isUpgradeDetected(events: Event[]): boolean {
   return events.some(event => {
     const reason = event.reason;
     const message = event.message || '';
-    if (reason === 'Upgrade' && message.includes('Upgrade started for agent pool')) {
+    if (reason === EVENT_REASONS.UPGRADE && message.includes(EVENT_MESSAGES.UPGRADE_STARTED)) {
       return true;
     }
-    if (reason === 'Surge' && message.includes('Created a surge node')) {
+    if (reason === EVENT_REASONS.SURGE && message.includes(EVENT_MESSAGES.SURGE_CREATED)) {
       return true;
     }
-    if (reason === 'Upgrade' && message.includes('Successfully reimaged node')) {
+    if (
+      reason === EVENT_REASONS.UPGRADE &&
+      message.includes(EVENT_MESSAGES.SUCCESSFULLY_REIMAGED)
+    ) {
       return true;
     }
     return false;
@@ -104,15 +154,13 @@ export function isUpgradeDetected(events: Event[]): boolean {
 /**
  * Build upgrade state for each node by processing events.
  */
-function buildNodeUpgradeStates(
-  nodes: Node[],
-  events: Event[]
-): Map<string, NodeUpgradeState> {
+function buildNodeUpgradeStates(nodes: Node[], events: Event[]): Map<string, NodeUpgradeState> {
   const stateMap = new Map<string, NodeUpgradeState>();
 
   // Initialize all nodes
   for (const node of nodes) {
     const name = node.metadata.name;
+    if (!name) continue;
     stateMap.set(name, {
       nodeName: name,
       isSurge: false,
@@ -162,13 +210,13 @@ function buildNodeUpgradeStates(
     }
 
     // Check for surge node
-    if (reason === 'Surge' && message.includes('Created a surge node')) {
+    if (reason === EVENT_REASONS.SURGE && message.includes(EVENT_MESSAGES.SURGE_CREATED)) {
       state.isSurge = true;
       continue;
     }
 
     // Process regular upgrade stages
-    if (reason === 'Cordon' && message.includes('Cordoning node')) {
+    if (reason === EVENT_REASONS.CORDON && message.includes(EVENT_MESSAGES.CORDONING)) {
       state.isUpgrading = true;
       state.currentStage = 'cordon';
       state.failedStage = null;
@@ -179,7 +227,7 @@ function buildNodeUpgradeStates(
       continue;
     }
 
-    if (reason === 'Drain' && message.includes('Draining node')) {
+    if (reason === EVENT_REASONS.DRAIN && message.includes(EVENT_MESSAGES.DRAINING)) {
       state.isUpgrading = true;
       state.currentStage = 'drain';
       state.failedStage = null;
@@ -191,9 +239,9 @@ function buildNodeUpgradeStates(
     }
 
     if (
-      reason === 'Upgrade' &&
-      message.includes('Deleting node') &&
-      message.includes('from API server')
+      reason === EVENT_REASONS.UPGRADE &&
+      message.includes(EVENT_MESSAGES.DELETING_NODE) &&
+      message.includes(EVENT_MESSAGES.DELETING_FROM_API)
     ) {
       state.isUpgrading = true;
       state.currentStage = 'deleteNode';
@@ -205,7 +253,7 @@ function buildNodeUpgradeStates(
       continue;
     }
 
-    if (reason === 'Upgrade' && message.includes('Reimaging node')) {
+    if (reason === EVENT_REASONS.UPGRADE && message.includes(EVENT_MESSAGES.REIMAGING)) {
       state.isUpgrading = true;
       state.currentStage = 'reimage';
       state.failedStage = null;
@@ -217,9 +265,14 @@ function buildNodeUpgradeStates(
     }
 
     if (
-      (reason === 'Upgrade' && message.includes('Successfully upgraded node')) ||
-      (reason === 'Starting' && message.includes('Starting kubelet') && state.isUpgrading) ||
-      (reason === 'RegisteredNode' && message.includes('Registered Node') && state.isUpgrading)
+      (reason === EVENT_REASONS.UPGRADE &&
+        message.includes(EVENT_MESSAGES.SUCCESSFULLY_UPGRADED)) ||
+      (reason === EVENT_REASONS.STARTING &&
+        message.includes(EVENT_MESSAGES.STARTING_KUBELET) &&
+        state.isUpgrading) ||
+      (reason === EVENT_REASONS.REGISTERED_NODE &&
+        message.includes(EVENT_MESSAGES.REGISTERED_NODE) &&
+        state.isUpgrading)
     ) {
       state.isUpgrading = true;
       state.currentStage = 'completed';
@@ -233,22 +286,22 @@ function buildNodeUpgradeStates(
 
     // Handle failures (Warning-type events)
     if (eventType === 'Warning') {
-      if (reason === 'Cordon' && message.toLowerCase().includes('failed')) {
+      if (reason === EVENT_REASONS.CORDON && message.toLowerCase().includes('failed')) {
         state.failedStage = 'cordon';
         state.failureMessage = message;
         continue;
       }
-      if (reason === 'Drain') {
+      if (reason === EVENT_REASONS.DRAIN) {
         state.failedStage = 'drain';
         state.failureMessage = message;
         continue;
       }
-      if (reason === 'Upgrade' && message.includes('Unable to delete node')) {
+      if (reason === EVENT_REASONS.UPGRADE && message.includes(EVENT_MESSAGES.UNABLE_TO_DELETE)) {
         state.failedStage = 'deleteNode';
         state.failureMessage = message;
         continue;
       }
-      if (reason === 'Upgrade' && message.includes('Failed to reimage node')) {
+      if (reason === EVENT_REASONS.UPGRADE && message.includes(EVENT_MESSAGES.FAILED_TO_REIMAGE)) {
         state.failedStage = 'reimage';
         state.failureMessage = message;
         continue;
@@ -313,7 +366,7 @@ function UpgradeStepIcon(props: StepIconProps & { stage: UpgradeStage; isFailed:
   const theme = useTheme();
 
   let bgColor = theme.palette.grey[400];
-  let iconColor = '#fff';
+  const iconColor = '#fff';
 
   if (isFailed) {
     bgColor = theme.palette.error.main;
@@ -369,45 +422,31 @@ function getUpgradeDuration(state: NodeUpgradeState): string | null {
 /**
  * Renders the upgrade stepper for a single upgrading node.
  */
-function NodeUpgradeStepper({
-  state,
-  node,
-}: {
-  state: NodeUpgradeState;
-  node: Node | undefined;
-}) {
+function NodeUpgradeStepper({ state, node }: { state: NodeUpgradeState; node: Node | undefined }) {
+  const { t } = useTranslation(['translation']);
   const theme = useTheme();
 
-  const activeStepIndex = state.currentStage
-    ? UPGRADE_STAGES.indexOf(state.currentStage)
-    : -1;
+  const activeStepIndex = state.currentStage ? UPGRADE_STAGES.indexOf(state.currentStage) : -1;
 
-  const failedStepIndex = state.failedStage
-    ? UPGRADE_STAGES.indexOf(state.failedStage)
-    : -1;
+  const failedStepIndex = state.failedStage ? UPGRADE_STAGES.indexOf(state.failedStage) : -1;
 
   const isReady = node?.status?.conditions?.find(c => c.type === 'Ready')?.status === 'True';
   const version = node?.status?.nodeInfo?.kubeletVersion;
   const duration = getUpgradeDuration(state);
 
   return (
-    <Paper
-      variant="outlined"
-      sx={{ p: 2, mb: 2 }}
-    >
+    <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
       {/* Header: node name + Ready badge + version */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
             {state.nodeName}
           </Typography>
-          {isReady && (
-            <Chip label="Ready" size="small" color="success" variant="outlined" />
-          )}
+          {isReady && <Chip label={t('Ready')} size="small" color="success" variant="outlined" />}
         </Box>
         {version && (
           <Typography variant="body2" sx={{ color: theme.palette.primary.main, fontWeight: 500 }}>
-            Version: {version}
+            {t('Version: {{ version }}', { version })}
           </Typography>
         )}
       </Box>
@@ -415,19 +454,20 @@ function NodeUpgradeStepper({
       {/* Duration */}
       {duration && (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1.5 }}>
-          <Icon icon="mdi:timer-outline" width={16} height={16} color={theme.palette.text.secondary} />
+          <Icon
+            icon="mdi:timer-outline"
+            width={16}
+            height={16}
+            color={theme.palette.text.secondary}
+          />
           <Typography variant="body2" color="text.secondary">
-            Duration: {duration}
+            {t('Duration: {{ duration }}', { duration })}
           </Typography>
         </Box>
       )}
 
       {/* Stepper */}
-      <Stepper
-        activeStep={activeStepIndex}
-        alternativeLabel
-        connector={<UpgradeStepConnector />}
-      >
+      <Stepper activeStep={activeStepIndex} alternativeLabel connector={<UpgradeStepConnector />}>
         {UPGRADE_STAGES.map((stage, index) => {
           const isFailed = index === failedStepIndex;
           const isCompleted =
@@ -491,7 +531,7 @@ function NodeUpgradeStepper({
                   },
                 }}
               >
-                {STAGE_LABELS[stage]}
+                {t(STAGE_LABELS[stage])}
               </StepLabel>
             </Step>
           );
@@ -505,6 +545,7 @@ function NodeUpgradeStepper({
  * Renders a single non-upgrading node row with Ready badge and version.
  */
 function NodeIdleRow({ state, node }: { state: NodeUpgradeState; node: Node | undefined }) {
+  const { t } = useTranslation(['translation']);
   const theme = useTheme();
   const isReady = node?.status?.conditions?.find(c => c.type === 'Ready')?.status === 'True';
   const version = node?.status?.nodeInfo?.kubeletVersion;
@@ -515,19 +556,13 @@ function NodeIdleRow({ state, node }: { state: NodeUpgradeState; node: Node | un
       sx={{ p: 1.5, mb: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Typography variant="subtitle2">
-          {state.nodeName}
-        </Typography>
-        {isReady && (
-          <Chip label="Ready" size="small" color="success" variant="outlined" />
-        )}
-        {state.isSurge && (
-          <Chip label="Surge Node" size="small" color="info" />
-        )}
+        <Typography variant="subtitle2">{state.nodeName}</Typography>
+        {isReady && <Chip label={t('Ready')} size="small" color="success" variant="outlined" />}
+        {state.isSurge && <Chip label={t('Surge Node')} size="small" color="info" />}
       </Box>
       {version && (
         <Typography variant="body2" sx={{ color: theme.palette.primary.main, fontWeight: 500 }}>
-          Version: {version}
+          {t('Version: {{ version }}', { version })}
         </Typography>
       )}
     </Paper>
@@ -539,6 +574,7 @@ function NodeIdleRow({ state, node }: { state: NodeUpgradeState; node: Node | un
  * Shown below the node list table when an upgrade is detected.
  */
 export default function UpgradeVisualizationPanel() {
+  const { t } = useTranslation(['translation']);
   const { items: events } = Event.useList({
     limit: Event.maxLimit,
   });
@@ -569,26 +605,33 @@ export default function UpgradeVisualizationPanel() {
   const nodeMap = new Map<string, Node>();
   if (nodes) {
     for (const node of nodes) {
-      nodeMap.set(node.metadata.name, node);
+      const name = node.metadata.name;
+      if (!name) continue;
+      nodeMap.set(name, node);
     }
   }
 
   const states = Array.from(nodeStates.values());
-  const upgradingNodes = states.filter(s => s.isUpgrading && !s.isSurge && s.currentStage !== 'completed');
+  const upgradingNodes = states.filter(
+    s => s.isUpgrading && !s.isSurge && s.currentStage !== 'completed'
+  );
   const surgeNodes = states.filter(s => s.isSurge && nodeMap.has(s.nodeName));
-  const idleNodes = states.filter(s => ((!s.isUpgrading && !s.isSurge) || s.currentStage === 'completed') && nodeMap.has(s.nodeName));
+  const idleNodes = states.filter(
+    s =>
+      ((!s.isUpgrading && !s.isSurge) || s.currentStage === 'completed') && nodeMap.has(s.nodeName)
+  );
 
   return (
     <Box sx={{ mt: 2 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>
-        Upgrade Progress
+        {t('Upgrade Progress')}
       </Typography>
 
       {/* Upgrading nodes with steppers */}
       {upgradingNodes.length > 0 && (
         <Box sx={{ mb: 2 }}>
           <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
-            Upgrading Nodes
+            {t('Upgrading Nodes')}
           </Typography>
           {upgradingNodes.map(state => (
             <NodeUpgradeStepper
@@ -604,7 +647,7 @@ export default function UpgradeVisualizationPanel() {
       {surgeNodes.length > 0 && (
         <Box sx={{ mb: 2 }}>
           <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
-            Surge Nodes
+            {t('Surge Nodes')}
           </Typography>
           {surgeNodes.map(state => (
             <NodeIdleRow key={state.nodeName} state={state} node={nodeMap.get(state.nodeName)} />
@@ -616,7 +659,7 @@ export default function UpgradeVisualizationPanel() {
       {idleNodes.length > 0 && (
         <Box sx={{ mb: 2 }}>
           <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
-            Idle Nodes
+            {t('Idle Nodes')}
           </Typography>
           {idleNodes.map(state => (
             <NodeIdleRow key={state.nodeName} state={state} node={nodeMap.get(state.nodeName)} />

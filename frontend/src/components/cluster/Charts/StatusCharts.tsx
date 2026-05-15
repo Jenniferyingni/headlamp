@@ -24,7 +24,7 @@ import Node from '../../../lib/k8s/node';
 import Pod from '../../../lib/k8s/pod';
 import Link from '../../common/Link';
 import TileChart from '../../common/TileChart';
-import { isUpgradeDetected } from '../../node/UpgradeVisualizationPanel';
+import { hasAKSManagedNodes, isUpgradeDetected } from '../../node/UpgradeVisualizationPanel';
 
 export function PodsStatusCircleChart(props: { items: Pod[] | null }) {
   const theme = useTheme();
@@ -87,10 +87,14 @@ export function PodsStatusCircleChart(props: { items: Pod[] | null }) {
   );
 }
 
-export function NodesStatusCircleChart(props: { items: Node[] | null }) {
+/**
+ * Child component that fetches events and shows the upgrade link.
+ * Only rendered when AKS nodes are detected, so non-AKS clusters
+ * never pay the event-fetch cost.
+ */
+function NodesUpgradeLink() {
   const theme = useTheme();
-  const { items } = props;
-  const { t } = useTranslation(['translation', 'glossary']);
+  const { t } = useTranslation(['translation']);
 
   const { items: events } = Event.useList({
     limit: Event.maxLimit,
@@ -100,6 +104,36 @@ export function NodesStatusCircleChart(props: { items: Node[] | null }) {
     if (!events) return false;
     return isUpgradeDetected(events);
   }, [events]);
+
+  if (!upgradeDetected) {
+    return null;
+  }
+
+  return (
+    <Link routeName="nodes">
+      <Typography
+        variant="body2"
+        component="span"
+        sx={{
+          color: theme.palette.warning.main,
+          fontWeight: 600,
+        }}
+      >
+        ⚡ {t('Upgrade in Progress')}
+      </Typography>
+    </Link>
+  );
+}
+
+export function NodesStatusCircleChart(props: { items: Node[] | null }) {
+  const theme = useTheme();
+  const { items } = props;
+  const { t } = useTranslation(['translation', 'glossary']);
+
+  const isAKSCluster = useMemo(() => {
+    if (!items) return false;
+    return hasAKSManagedNodes(items);
+  }, [items]);
 
   const nodesReady = (items || []).filter((node: Node) => {
     const readyCondition = node.status?.conditions?.find(condition => condition.type === 'Ready');
@@ -142,27 +176,6 @@ export function NodesStatusCircleChart(props: { items: Node[] | null }) {
     ];
   }
 
-  function getUpgradeLink() {
-    if (!upgradeDetected) {
-      return null;
-    }
-    return (
-      <Link routeName="nodes">
-        <Typography
-          variant="body2"
-          sx={{
-            color: theme.palette.warning.main,
-            fontWeight: 600,
-            cursor: 'pointer',
-            '&:hover': { textDecoration: 'underline' },
-          }}
-        >
-          ⚡ Upgrade in Progress
-        </Typography>
-      </Link>
-    );
-  }
-
   return (
     <TileChart
       data={getData()}
@@ -170,7 +183,7 @@ export function NodesStatusCircleChart(props: { items: Node[] | null }) {
       label={getLabel()}
       title={t('glossary|Nodes')}
       legend={getLegend()}
-      extraContent={getUpgradeLink()}
+      extraContent={isAKSCluster ? <NodesUpgradeLink /> : null}
     />
   );
 }
