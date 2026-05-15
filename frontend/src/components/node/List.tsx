@@ -21,6 +21,7 @@ import { HoverInfoLabel } from '../common/Label';
 import ResourceListView from '../common/Resource/ResourceListView';
 import { UsageBarChart } from './Charts';
 import { NodeReadyLabel } from './Details';
+import UpgradeVisualizationPanel from './UpgradeVisualizationPanel';
 import { formatTaint, NodeTaintsLabel } from './utils';
 
 export default function NodeList() {
@@ -169,6 +170,8 @@ export default function NodeList() {
         'labels',
         'age',
       ]}
-    />
+    >
+      <UpgradeVisualizationPanel />
+    </ResourceListView>
   );
 }

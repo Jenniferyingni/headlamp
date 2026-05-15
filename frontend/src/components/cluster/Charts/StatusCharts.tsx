@@ -16,10 +16,15 @@
 
 import '../../../i18n/config';
 import { useTheme } from '@mui/material/styles';
+import Typography from '@mui/material/Typography';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import Event from '../../../lib/k8s/event';
 import Node from '../../../lib/k8s/node';
 import Pod from '../../../lib/k8s/pod';
+import Link from '../../common/Link';
 import TileChart from '../../common/TileChart';
+import { isUpgradeDetected } from '../../node/UpgradeVisualizationPanel';
 
 export function PodsStatusCircleChart(props: { items: Pod[] | null }) {
   const theme = useTheme();
@@ -87,6 +92,15 @@ export function NodesStatusCircleChart(props: { items: Node[] | null }) {
   const { items } = props;
   const { t } = useTranslation(['translation', 'glossary']);
 
+  const { items: events } = Event.useList({
+    limit: Event.maxLimit,
+  });
+
+  const upgradeDetected = useMemo(() => {
+    if (!events) return false;
+    return isUpgradeDetected(events);
+  }, [events]);
+
   const nodesReady = (items || []).filter((node: Node) => {
     const readyCondition = node.status?.conditions?.find(condition => condition.type === 'Ready');
     return readyCondition?.status === 'True';
@@ -128,6 +142,27 @@ export function NodesStatusCircleChart(props: { items: Node[] | null }) {
     ];
   }
 
+  function getUpgradeLink() {
+    if (!upgradeDetected) {
+      return null;
+    }
+    return (
+      <Link routeName="nodes">
+        <Typography
+          variant="body2"
+          sx={{
+            color: theme.palette.warning.main,
+            fontWeight: 600,
+            cursor: 'pointer',
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          ⚡ Upgrade in Progress
+        </Typography>
+      </Link>
+    );
+  }
+
   return (
     <TileChart
       data={getData()}
@@ -135,6 +170,7 @@ export function NodesStatusCircleChart(props: { items: Node[] | null }) {
       label={getLabel()}
       title={t('glossary|Nodes')}
       legend={getLegend()}
+      extraContent={getUpgradeLink()}
     />
   );
 }

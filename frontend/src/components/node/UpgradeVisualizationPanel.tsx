@@ -1,0 +1,628 @@
+/*
+ * Copyright 2025 The Kubernetes Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { useMemo } from 'react';
+import { Icon } from '@iconify/react';
+import Box from '@mui/material/Box';
+import Chip from '@mui/material/Chip';
+import Paper from '@mui/material/Paper';
+import Step from '@mui/material/Step';
+import StepConnector, { stepConnectorClasses } from '@mui/material/StepConnector';
+import { StepIconProps } from '@mui/material/StepIcon';
+import StepLabel from '@mui/material/StepLabel';
+import Stepper from '@mui/material/Stepper';
+import { styled, useTheme } from '@mui/material/styles';
+import Typography from '@mui/material/Typography';
+import Event from '../../lib/k8s/event';
+import Node from '../../lib/k8s/node';
+
+/**
+ * The 5 stages of a regular node upgrade, in order.
+ */
+const UPGRADE_STAGES = ['cordon', 'drain', 'deleteNode', 'reimage', 'completed'] as const;
+type UpgradeStage = (typeof UPGRADE_STAGES)[number];
+
+const STAGE_LABELS: Record<UpgradeStage, string> = {
+  cordon: 'Cordon',
+  drain: 'Drain',
+  deleteNode: 'Delete',
+  reimage: 'Reimage',
+  completed: 'Complete',
+};
+
+/**
+ * Iconify icon names for each stage.
+ */
+const STAGE_ICONS: Record<UpgradeStage, string> = {
+  cordon: 'mdi:lock',
+  drain: 'mdi:clipboard-arrow-down',
+  deleteNode: 'mdi:delete',
+  reimage: 'mdi:timer-sand',
+  completed: 'mdi:check-circle',
+};
+
+interface NodeUpgradeState {
+  nodeName: string;
+  isSurge: boolean;
+  isUpgrading: boolean;
+  currentStage: UpgradeStage | null;
+  failedStage: UpgradeStage | null;
+  failureMessage: string | null;
+  /** Timestamp (ISO string) when each stage started */
+  stageTimestamps: Partial<Record<UpgradeStage, string>>;
+}
+
+/**
+ * Check if any node in the list is an AKS-managed node.
+ * AKS nodes have a providerID starting with "azure://" or carry the
+ * "kubernetes.azure.com/cluster" label, or have a name matching AKS naming patterns.
+ */
+export function hasAKSManagedNodes(nodes: Node[]): boolean {
+  return nodes.some(node => {
+    // AKS node naming patterns: aks-<pool>-<id>-vmss<index> or akswin<chars>
+    const name = node.metadata.name || '';
+    if (/^aks-/.test(name) || /^akswin/.test(name)) {
+      return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * Determine if an upgrade is happening by checking for surge or reimage events.
+ */
+export function isUpgradeDetected(events: Event[]): boolean {
+  return events.some(event => {
+    const reason = event.reason;
+    const message = event.message || '';
+    if (reason === 'Upgrade' && message.includes('Upgrade started for agent pool')) {
+      return true;
+    }
+    if (reason === 'Surge' && message.includes('Created a surge node')) {
+      return true;
+    }
+    if (reason === 'Upgrade' && message.includes('Successfully reimaged node')) {
+      return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * Build upgrade state for each node by processing events.
+ */
+function buildNodeUpgradeStates(
+  nodes: Node[],
+  events: Event[]
+): Map<string, NodeUpgradeState> {
+  const stateMap = new Map<string, NodeUpgradeState>();
+
+  // Initialize all nodes
+  for (const node of nodes) {
+    const name = node.metadata.name;
+    stateMap.set(name, {
+      nodeName: name,
+      isSurge: false,
+      isUpgrading: false,
+      currentStage: null,
+      failedStage: null,
+      failureMessage: null,
+      stageTimestamps: {},
+    });
+  }
+
+  // Sort events by creation timestamp (oldest first)
+  const sortedEvents = [...events]
+    .filter(e => e.involvedObject?.kind === 'Node')
+    .sort((a, b) => {
+      const timeA = new Date(a.metadata.creationTimestamp || 0).getTime();
+      const timeB = new Date(b.metadata.creationTimestamp || 0).getTime();
+      return timeA - timeB;
+    });
+
+  for (const event of sortedEvents) {
+    const nodeName = event.involvedObject?.name;
+    if (!nodeName) continue;
+
+    // Ensure node exists in state map (could be an event for a node not yet in node list)
+    if (!stateMap.has(nodeName)) {
+      stateMap.set(nodeName, {
+        nodeName,
+        isSurge: false,
+        isUpgrading: false,
+        currentStage: null,
+        failedStage: null,
+        failureMessage: null,
+        stageTimestamps: {},
+      });
+    }
+
+    const state = stateMap.get(nodeName)!;
+    const reason = event.reason || '';
+    const message = event.message || '';
+    const eventType = event.type || 'Normal';
+    const eventTime = event.metadata.creationTimestamp || '';
+
+    // Once completed, state is immutable
+    if (state.currentStage === 'completed') {
+      continue;
+    }
+
+    // Check for surge node
+    if (reason === 'Surge' && message.includes('Created a surge node')) {
+      state.isSurge = true;
+      continue;
+    }
+
+    // Process regular upgrade stages
+    if (reason === 'Cordon' && message.includes('Cordoning node')) {
+      state.isUpgrading = true;
+      state.currentStage = 'cordon';
+      state.failedStage = null;
+      state.failureMessage = null;
+      if (!state.stageTimestamps.cordon) {
+        state.stageTimestamps.cordon = eventTime;
+      }
+      continue;
+    }
+
+    if (reason === 'Drain' && message.includes('Draining node')) {
+      state.isUpgrading = true;
+      state.currentStage = 'drain';
+      state.failedStage = null;
+      state.failureMessage = null;
+      if (!state.stageTimestamps.drain) {
+        state.stageTimestamps.drain = eventTime;
+      }
+      continue;
+    }
+
+    if (
+      reason === 'Upgrade' &&
+      message.includes('Deleting node') &&
+      message.includes('from API server')
+    ) {
+      state.isUpgrading = true;
+      state.currentStage = 'deleteNode';
+      state.failedStage = null;
+      state.failureMessage = null;
+      if (!state.stageTimestamps.deleteNode) {
+        state.stageTimestamps.deleteNode = eventTime;
+      }
+      continue;
+    }
+
+    if (reason === 'Upgrade' && message.includes('Reimaging node')) {
+      state.isUpgrading = true;
+      state.currentStage = 'reimage';
+      state.failedStage = null;
+      state.failureMessage = null;
+      if (!state.stageTimestamps.reimage) {
+        state.stageTimestamps.reimage = eventTime;
+      }
+      continue;
+    }
+
+    if (
+      (reason === 'Upgrade' && message.includes('Successfully upgraded node')) ||
+      (reason === 'Starting' && message.includes('Starting kubelet') && state.isUpgrading) ||
+      (reason === 'RegisteredNode' && message.includes('Registered Node') && state.isUpgrading)
+    ) {
+      state.isUpgrading = true;
+      state.currentStage = 'completed';
+      state.failedStage = null;
+      state.failureMessage = null;
+      if (!state.stageTimestamps.completed) {
+        state.stageTimestamps.completed = eventTime;
+      }
+      continue;
+    }
+
+    // Handle failures (Warning-type events)
+    if (eventType === 'Warning') {
+      if (reason === 'Cordon' && message.toLowerCase().includes('failed')) {
+        state.failedStage = 'cordon';
+        state.failureMessage = message;
+        continue;
+      }
+      if (reason === 'Drain') {
+        state.failedStage = 'drain';
+        state.failureMessage = message;
+        continue;
+      }
+      if (reason === 'Upgrade' && message.includes('Unable to delete node')) {
+        state.failedStage = 'deleteNode';
+        state.failureMessage = message;
+        continue;
+      }
+      if (reason === 'Upgrade' && message.includes('Failed to reimage node')) {
+        state.failedStage = 'reimage';
+        state.failureMessage = message;
+        continue;
+      }
+    }
+  }
+
+  return stateMap;
+}
+
+/**
+ * Format a duration in milliseconds to a human-readable string like "4m 7s".
+ */
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) {
+    return `${seconds}s`;
+  }
+  return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * Format a timestamp string to a locale time string like "09:36:43 AM".
+ */
+function formatTimestamp(ts: string): string {
+  const date = new Date(ts);
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+/**
+ * Custom connector line between steps — green when completed, primary when active.
+ */
+const UpgradeStepConnector = styled(StepConnector)(({ theme }) => ({
+  [`&.${stepConnectorClasses.completed}`]: {
+    [`& .${stepConnectorClasses.line}`]: {
+      borderColor: theme.palette.success.main,
+    },
+  },
+  [`&.${stepConnectorClasses.active}`]: {
+    [`& .${stepConnectorClasses.line}`]: {
+      borderColor: theme.palette.success.main,
+    },
+  },
+  [`& .${stepConnectorClasses.line}`]: {
+    borderColor: theme.palette.grey[400],
+    borderTopWidth: 3,
+    borderRadius: 1,
+  },
+}));
+
+/**
+ * Custom step icon component that renders an Iconify icon inside a colored circle.
+ */
+function UpgradeStepIcon(props: StepIconProps & { stage: UpgradeStage; isFailed: boolean }) {
+  const { active, completed, stage, isFailed } = props;
+  const theme = useTheme();
+
+  let bgColor = theme.palette.grey[400];
+  let iconColor = '#fff';
+
+  if (isFailed) {
+    bgColor = theme.palette.error.main;
+  } else if (completed) {
+    bgColor = theme.palette.success.main;
+  } else if (active) {
+    bgColor = theme.palette.primary.main;
+  }
+
+  return (
+    <Box
+      sx={{
+        width: 40,
+        height: 40,
+        borderRadius: '50%',
+        backgroundColor: bgColor,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxShadow: active ? `0 0 0 4px ${bgColor}40` : 'none',
+      }}
+    >
+      <Icon icon={STAGE_ICONS[stage]} width={22} height={22} color={iconColor} />
+    </Box>
+  );
+}
+
+/**
+ * Compute the duration of the upgrade for a given node.
+ * Returns the duration string or null if not enough timestamps.
+ */
+function getUpgradeDuration(state: NodeUpgradeState): string | null {
+  const firstStage = UPGRADE_STAGES[0];
+  const startTs = state.stageTimestamps[firstStage];
+  if (!startTs) return null;
+
+  // Use the last known timestamp
+  let endTs: string | null = null;
+  for (let i = UPGRADE_STAGES.length - 1; i >= 0; i--) {
+    const ts = state.stageTimestamps[UPGRADE_STAGES[i]];
+    if (ts) {
+      endTs = ts;
+      break;
+    }
+  }
+  if (!endTs || endTs === startTs) return null;
+
+  const ms = new Date(endTs).getTime() - new Date(startTs).getTime();
+  if (ms <= 0) return null;
+  return formatDuration(ms);
+}
+
+/**
+ * Renders the upgrade stepper for a single upgrading node.
+ */
+function NodeUpgradeStepper({
+  state,
+  node,
+}: {
+  state: NodeUpgradeState;
+  node: Node | undefined;
+}) {
+  const theme = useTheme();
+
+  const activeStepIndex = state.currentStage
+    ? UPGRADE_STAGES.indexOf(state.currentStage)
+    : -1;
+
+  const failedStepIndex = state.failedStage
+    ? UPGRADE_STAGES.indexOf(state.failedStage)
+    : -1;
+
+  const isReady = node?.status?.conditions?.find(c => c.type === 'Ready')?.status === 'True';
+  const version = node?.status?.nodeInfo?.kubeletVersion;
+  const duration = getUpgradeDuration(state);
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{ p: 2, mb: 2 }}
+    >
+      {/* Header: node name + Ready badge + version */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+            {state.nodeName}
+          </Typography>
+          {isReady && (
+            <Chip label="Ready" size="small" color="success" variant="outlined" />
+          )}
+        </Box>
+        {version && (
+          <Typography variant="body2" sx={{ color: theme.palette.primary.main, fontWeight: 500 }}>
+            Version: {version}
+          </Typography>
+        )}
+      </Box>
+
+      {/* Duration */}
+      {duration && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1.5 }}>
+          <Icon icon="mdi:timer-outline" width={16} height={16} color={theme.palette.text.secondary} />
+          <Typography variant="body2" color="text.secondary">
+            Duration: {duration}
+          </Typography>
+        </Box>
+      )}
+
+      {/* Stepper */}
+      <Stepper
+        activeStep={activeStepIndex}
+        alternativeLabel
+        connector={<UpgradeStepConnector />}
+      >
+        {UPGRADE_STAGES.map((stage, index) => {
+          const isFailed = index === failedStepIndex;
+          const isCompleted =
+            index < activeStepIndex ||
+            (stage === 'completed' && state.currentStage === 'completed');
+          const isActive = index === activeStepIndex;
+          const timestamp = state.stageTimestamps[stage];
+
+          return (
+            <Step key={stage} completed={isCompleted}>
+              <StepLabel
+                error={isFailed}
+                StepIconComponent={(iconProps: StepIconProps) => (
+                  <UpgradeStepIcon
+                    {...iconProps}
+                    stage={stage}
+                    isFailed={isFailed}
+                    completed={isCompleted}
+                    active={isActive}
+                  />
+                )}
+                optional={
+                  isFailed && state.failureMessage ? (
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        display: 'block',
+                        maxWidth: 200,
+                        wordBreak: 'break-word',
+                        whiteSpace: 'normal',
+                        textAlign: 'center',
+                      }}
+                    >
+                      {state.failureMessage}
+                    </Typography>
+                  ) : timestamp ? (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: 'block', textAlign: 'center' }}
+                    >
+                      {formatTimestamp(timestamp)}
+                    </Typography>
+                  ) : undefined
+                }
+                sx={{
+                  '& .MuiStepLabel-label': {
+                    fontWeight: isActive ? 'bold' : 'normal',
+                    mt: 0.5,
+                    ...(isCompleted &&
+                      !isFailed && {
+                        color: `${theme.palette.success.main} !important`,
+                      }),
+                    ...(isFailed && {
+                      color: `${theme.palette.error.main} !important`,
+                    }),
+                    ...(isActive &&
+                      !isFailed && {
+                        color: `${theme.palette.primary.main} !important`,
+                      }),
+                  },
+                }}
+              >
+                {STAGE_LABELS[stage]}
+              </StepLabel>
+            </Step>
+          );
+        })}
+      </Stepper>
+    </Paper>
+  );
+}
+
+/**
+ * Renders a single non-upgrading node row with Ready badge and version.
+ */
+function NodeIdleRow({ state, node }: { state: NodeUpgradeState; node: Node | undefined }) {
+  const theme = useTheme();
+  const isReady = node?.status?.conditions?.find(c => c.type === 'Ready')?.status === 'True';
+  const version = node?.status?.nodeInfo?.kubeletVersion;
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{ p: 1.5, mb: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Typography variant="subtitle2">
+          {state.nodeName}
+        </Typography>
+        {isReady && (
+          <Chip label="Ready" size="small" color="success" variant="outlined" />
+        )}
+        {state.isSurge && (
+          <Chip label="Surge Node" size="small" color="info" />
+        )}
+      </Box>
+      {version && (
+        <Typography variant="body2" sx={{ color: theme.palette.primary.main, fontWeight: 500 }}>
+          Version: {version}
+        </Typography>
+      )}
+    </Paper>
+  );
+}
+
+/**
+ * Upgrade Visualization Panel.
+ * Shown below the node list table when an upgrade is detected.
+ */
+export default function UpgradeVisualizationPanel() {
+  const { items: events } = Event.useList({
+    limit: Event.maxLimit,
+  });
+
+  const { items: nodes } = Node.useList();
+
+  const upgradeDetected = useMemo(() => {
+    if (!events) return false;
+    return isUpgradeDetected(events);
+  }, [events]);
+
+  const isAKSCluster = useMemo(() => {
+    if (!nodes) return false;
+    return hasAKSManagedNodes(nodes);
+  }, [nodes]);
+
+  const nodeStates = useMemo(() => {
+    if (!nodes || !events) return new Map<string, NodeUpgradeState>();
+    return buildNodeUpgradeStates(nodes, events);
+  }, [nodes, events]);
+
+  // Don't show the panel unless upgrade is detected AND nodes are AKS-managed
+  if (!upgradeDetected || !isAKSCluster) {
+    return null;
+  }
+
+  // Build a lookup map from node name to Node object
+  const nodeMap = new Map<string, Node>();
+  if (nodes) {
+    for (const node of nodes) {
+      nodeMap.set(node.metadata.name, node);
+    }
+  }
+
+  const states = Array.from(nodeStates.values());
+  const upgradingNodes = states.filter(s => s.isUpgrading && !s.isSurge && s.currentStage !== 'completed');
+  const surgeNodes = states.filter(s => s.isSurge && nodeMap.has(s.nodeName));
+  const idleNodes = states.filter(s => ((!s.isUpgrading && !s.isSurge) || s.currentStage === 'completed') && nodeMap.has(s.nodeName));
+
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Typography variant="h6" sx={{ mb: 2 }}>
+        Upgrade Progress
+      </Typography>
+
+      {/* Upgrading nodes with steppers */}
+      {upgradingNodes.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
+            Upgrading Nodes
+          </Typography>
+          {upgradingNodes.map(state => (
+            <NodeUpgradeStepper
+              key={state.nodeName}
+              state={state}
+              node={nodeMap.get(state.nodeName)}
+            />
+          ))}
+        </Box>
+      )}
+
+      {/* Surge nodes */}
+      {surgeNodes.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
+            Surge Nodes
+          </Typography>
+          {surgeNodes.map(state => (
+            <NodeIdleRow key={state.nodeName} state={state} node={nodeMap.get(state.nodeName)} />
+          ))}
+        </Box>
+      )}
+
+      {/* Idle (non-upgrading) nodes */}
+      {idleNodes.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
+            Idle Nodes
+          </Typography>
+          {idleNodes.map(state => (
+            <NodeIdleRow key={state.nodeName} state={state} node={nodeMap.get(state.nodeName)} />
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+}

@@ -26,10 +26,12 @@ export interface TileChartProps extends Omit<PercentageCircleProps, 'data'> {
   infoTooltip?: string | null;
   /** Data to display for the chart. */
   data?: PercentageCircleProps['data'] | null;
+  /** Extra content rendered below the legend, left-aligned. */
+  extraContent?: React.ReactNode;
 }
 
 export function TileChart(props: TileChartProps) {
-  const { title, infoTooltip = '', legend, total, data, ...others } = props;
+  const { title, infoTooltip = '', legend, total, data, extraContent, ...others } = props;
 
   return (
     <Paper
@@ -75,6 +77,7 @@ export function TileChart(props: TileChartProps) {
           >
             {legend || ''}
           </Typography>
+          {extraContent && <Box sx={{ mt: 0.5 }}>{extraContent}</Box>}
         </Box>
         <Box>
           {!!data && (
