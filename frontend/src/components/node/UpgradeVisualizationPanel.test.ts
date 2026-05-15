@@ -320,43 +320,6 @@ describe('buildNodeUpgradeStates', () => {
       const result = buildNodeUpgradeStates(nodes, events);
       expect(result.get('node-1')!.failedStage).toBe('reimage');
     });
-
-    it('clears failure on successful stage progression', () => {
-      const nodes = [makeNode('node-1')];
-      const events = [
-        makeEvent({
-          reason: 'Cordon',
-          message: 'Cordoning node node-1',
-          nodeName: 'node-1',
-          creationTimestamp: '2025-01-01T00:01:00Z',
-        }),
-        makeEvent({
-          reason: 'Drain',
-          message: 'Draining node node-1',
-          nodeName: 'node-1',
-          creationTimestamp: '2025-01-01T00:02:00Z',
-        }),
-        makeEvent({
-          reason: 'Drain',
-          message: 'Error evicting pods XXX from node node-1',
-          type: 'Warning',
-          nodeName: 'node-1',
-          creationTimestamp: '2025-01-01T00:03:00Z',
-        }),
-        makeEvent({
-          reason: 'Upgrade',
-          message: 'Deleting node node-1 from API server',
-          nodeName: 'node-1',
-          creationTimestamp: '2025-01-01T00:04:00Z',
-        }),
-      ];
-
-      const result = buildNodeUpgradeStates(nodes, events);
-      const state = result.get('node-1')!;
-      expect(state.currentStage).toBe('deleteNode');
-      expect(state.failedStage).toBeNull();
-      expect(state.failureMessage).toBeNull();
-    });
   });
 
   it('completes via Starting kubelet when node is upgrading', () => {

@@ -124,6 +124,7 @@ const EVENT_MESSAGES = {
   SUCCESSFULLY_UPGRADED: 'Successfully upgraded node',
   STARTING_KUBELET: 'Starting kubelet',
   REGISTERED_NODE: 'Registered Node',
+  DRAINING_ERROR: 'Error draining node',
   UNABLE_TO_DELETE: 'Unable to delete node',
   FAILED_TO_REIMAGE: 'Failed to reimage node',
 } as const;
@@ -222,8 +223,6 @@ export function buildNodeUpgradeStates(
     if (reason === EVENT_REASONS.CORDON && message.includes(EVENT_MESSAGES.CORDONING)) {
       state.isUpgrading = true;
       state.currentStage = 'cordon';
-      state.failedStage = null;
-      state.failureMessage = null;
       if (!state.stageTimestamps.cordon) {
         state.stageTimestamps.cordon = eventTime;
       }
@@ -233,8 +232,6 @@ export function buildNodeUpgradeStates(
     if (reason === EVENT_REASONS.DRAIN && message.includes(EVENT_MESSAGES.DRAINING)) {
       state.isUpgrading = true;
       state.currentStage = 'drain';
-      state.failedStage = null;
-      state.failureMessage = null;
       if (!state.stageTimestamps.drain) {
         state.stageTimestamps.drain = eventTime;
       }
@@ -248,8 +245,6 @@ export function buildNodeUpgradeStates(
     ) {
       state.isUpgrading = true;
       state.currentStage = 'deleteNode';
-      state.failedStage = null;
-      state.failureMessage = null;
       if (!state.stageTimestamps.deleteNode) {
         state.stageTimestamps.deleteNode = eventTime;
       }
@@ -259,8 +254,6 @@ export function buildNodeUpgradeStates(
     if (reason === EVENT_REASONS.UPGRADE && message.includes(EVENT_MESSAGES.REIMAGING)) {
       state.isUpgrading = true;
       state.currentStage = 'reimage';
-      state.failedStage = null;
-      state.failureMessage = null;
       if (!state.stageTimestamps.reimage) {
         state.stageTimestamps.reimage = eventTime;
       }
@@ -279,8 +272,6 @@ export function buildNodeUpgradeStates(
     ) {
       state.isUpgrading = true;
       state.currentStage = 'completed';
-      state.failedStage = null;
-      state.failureMessage = null;
       if (!state.stageTimestamps.completed) {
         state.stageTimestamps.completed = eventTime;
       }
@@ -294,7 +285,7 @@ export function buildNodeUpgradeStates(
         state.failureMessage = message;
         continue;
       }
-      if (reason === EVENT_REASONS.DRAIN) {
+      if (reason === EVENT_REASONS.DRAIN && message.includes(EVENT_MESSAGES.DRAINING_ERROR)) {
         state.failedStage = 'drain';
         state.failureMessage = message;
         continue;
