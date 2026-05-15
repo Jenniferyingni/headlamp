@@ -154,7 +154,10 @@ export function isUpgradeDetected(events: Event[]): boolean {
 /**
  * Build upgrade state for each node by processing events.
  */
-function buildNodeUpgradeStates(nodes: Node[], events: Event[]): Map<string, NodeUpgradeState> {
+export function buildNodeUpgradeStates(
+  nodes: Node[],
+  events: Event[]
+): Map<string, NodeUpgradeState> {
   const stateMap = new Map<string, NodeUpgradeState>();
 
   // Initialize all nodes
