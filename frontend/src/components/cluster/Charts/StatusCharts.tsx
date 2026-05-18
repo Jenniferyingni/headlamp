@@ -119,7 +119,8 @@ function NodesUpgradeLink() {
           fontWeight: 600,
         }}
       >
-        ⚡ {t('Upgrade in Progress')}
+        <span aria-hidden="true">⚡ </span>
+        {t('Upgrade in Progress')}
       </Typography>
     </Link>
   );

@@ -36,13 +36,20 @@ import Node from '../../lib/k8s/node';
 const UPGRADE_STAGES = ['cordon', 'drain', 'deleteNode', 'reimage', 'completed'] as const;
 type UpgradeStage = (typeof UPGRADE_STAGES)[number];
 
-const STAGE_LABELS: Record<UpgradeStage, string> = {
-  cordon: 'Cordon',
-  drain: 'Drain',
-  deleteNode: 'Delete',
-  reimage: 'Reimage',
-  completed: 'Complete',
-};
+function getStageLabelTranslated(stage: UpgradeStage, t: (key: string) => string): string {
+  switch (stage) {
+    case 'cordon':
+      return t('Cordon');
+    case 'drain':
+      return t('Drain');
+    case 'deleteNode':
+      return t('Delete');
+    case 'reimage':
+      return t('Reimage');
+    case 'completed':
+      return t('Complete');
+  }
+}
 
 /**
  * Iconify icon names for each stage.
@@ -71,7 +78,6 @@ interface NodeUpgradeState {
  * Detection uses multiple signals:
  * - providerID starting with "azure://"
  * - "kubernetes.azure.com/cluster" label
- * - Node name matching AKS naming patterns (aks-<pool>-... or akswin...)
  */
 export function hasAKSManagedNodes(nodes: Node[]): boolean {
   return nodes.some(node => {
@@ -84,12 +90,6 @@ export function hasAKSManagedNodes(nodes: Node[]): boolean {
     // Check for AKS-specific label
     const labels = node.metadata.labels || {};
     if ('kubernetes.azure.com/cluster' in labels) {
-      return true;
-    }
-
-    // AKS node naming patterns
-    const name = node.metadata.name || '';
-    if (/^aks-/.test(name) || /^akswin/.test(name)) {
       return true;
     }
 
@@ -525,7 +525,7 @@ function NodeUpgradeStepper({ state, node }: { state: NodeUpgradeState; node: No
                   },
                 }}
               >
-                {t(STAGE_LABELS[stage])}
+                {getStageLabelTranslated(stage, t)}
               </StepLabel>
             </Step>
           );
