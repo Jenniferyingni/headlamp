@@ -17,6 +17,7 @@
 import { useTranslation } from 'react-i18next';
 import Node from '../../lib/k8s/node';
 import { getResourceMetrics } from '../../lib/util';
+import { CreateResourceButton } from '../common/CreateResourceButton';
 import { HoverInfoLabel } from '../common/Label';
 import ResourceListView from '../common/Resource/ResourceListView';
 import { UsageBarChart } from './Charts';
@@ -26,6 +27,7 @@ import { formatTaint, NodeTaintsLabel } from './utils';
 
 export default function NodeList() {
   const [nodeMetrics, metricsError] = Node.useMetrics();
+  const { items: nodes } = Node.useList();
   const { t } = useTranslation(['glossary', 'translation']);
 
   const noMetrics = metricsError?.status === 404;
@@ -36,8 +38,9 @@ export default function NodeList() {
         title={t('Nodes')}
         headerProps={{
           noNamespaceFilter: true,
+          titleSideActions: [<CreateResourceButton resourceClass={Node} />],
         }}
-        resourceClass={Node}
+        data={nodes}
         columns={[
           'name',
           'cluster',
@@ -172,7 +175,7 @@ export default function NodeList() {
           'age',
         ]}
       />
-      <UpgradeVisualizationPanel />
+      <UpgradeVisualizationPanel nodes={nodes} />
     </>
   );
 }

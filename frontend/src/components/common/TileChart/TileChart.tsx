@@ -18,6 +18,7 @@ import '../../../i18n/config';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
+import { ReactNode } from 'react';
 import { PercentageCircle, PercentageCircleProps } from '../Chart';
 import { TooltipIcon } from '../Tooltip';
 
@@ -27,7 +28,7 @@ export interface TileChartProps extends Omit<PercentageCircleProps, 'data'> {
   /** Data to display for the chart. */
   data?: PercentageCircleProps['data'] | null;
   /** Extra content rendered below the legend, left-aligned. */
-  extraContent?: React.ReactNode;
+  extraContent?: ReactNode;
 }
 
 export function TileChart(props: TileChartProps) {

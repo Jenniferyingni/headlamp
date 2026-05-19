@@ -28,6 +28,7 @@ import {
   EVENT_REASON_VALUES,
   hasAKSManagedNodes,
   isUpgradeDetected,
+  UPGRADE_EVENT_FIELD_SELECTOR,
 } from '../../node/UpgradeVisualizationPanel';
 
 export function PodsStatusCircleChart(props: { items: Pod[] | null }) {
@@ -100,15 +101,16 @@ function NodesUpgradeLink() {
   const theme = useTheme();
   const { t } = useTranslation(['translation']);
 
-  const { items: allEvents } = Event.useList({
+  const { items: nodeEvents } = Event.useList({
     limit: Event.maxLimit,
+    fieldSelector: UPGRADE_EVENT_FIELD_SELECTOR,
   });
 
   const upgradeDetected = useMemo(() => {
-    if (!allEvents) return false;
-    const events = allEvents.filter(e => e.reason && EVENT_REASON_VALUES.has(e.reason));
+    if (!nodeEvents) return false;
+    const events = nodeEvents.filter(e => e.reason && EVENT_REASON_VALUES.has(e.reason));
     return isUpgradeDetected(events);
-  }, [allEvents]);
+  }, [nodeEvents]);
 
   if (!upgradeDetected) {
     return null;

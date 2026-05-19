@@ -113,6 +113,13 @@ const EVENT_REASONS = {
 
 export const EVENT_REASON_VALUES = new Set<string>(Object.values(EVENT_REASONS));
 
+/**
+ * Field selector to exclude Pod events (which are the vast majority).
+ * Visualization only need node and namespace scope events.
+ * Excluding Pod events significantly reduces the number of events to process.
+ */
+export const UPGRADE_EVENT_FIELD_SELECTOR = 'involvedObject.kind!=Pod';
+
 const EVENT_MESSAGES = {
   UPGRADE_STARTED: 'Upgrade started for agent pool',
   SURGE_CREATED: 'Created a surge node',
@@ -129,7 +136,7 @@ const EVENT_MESSAGES = {
 } as const;
 
 /**
- * Determine if an upgrade is happening by checking for surge or reimage events.
+ * Determine if an upgrade is happening by checking for upgrade start, surge or reimage events.
  */
 export function isUpgradeDetected(events: Event[]): boolean {
   return events.some(event => {
@@ -506,9 +513,7 @@ function NodeIdleRow({ state, node }: { state: NodeUpgradeState; node: Node | un
  * Shown below the node list table when an upgrade is detected.
  * Gates on AKS-managed nodes so non-AKS clusters never pay the event-fetch cost.
  */
-export default function UpgradeVisualizationPanel() {
-  const { items: nodes } = Node.useList();
-
+export default function UpgradeVisualizationPanel({ nodes }: { nodes: Node[] | null }) {
   const isAKSCluster = useMemo(() => {
     if (!nodes) return false;
     return hasAKSManagedNodes(nodes);
@@ -529,6 +534,7 @@ function UpgradeVisualizationPanelInner({ nodes }: { nodes: Node[] }) {
   const { t } = useTranslation(['translation']);
   const { items: allEvents } = Event.useList({
     limit: Event.maxLimit,
+    fieldSelector: UPGRADE_EVENT_FIELD_SELECTOR,
   });
 
   const events = useMemo(
